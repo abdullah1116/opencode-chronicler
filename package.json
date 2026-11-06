@@ -1,0 +1,34 @@
+{
+  "name": "opencode-chronicler",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Read-only MCP server that serves opencode session history as Markdown over streamable HTTP.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/abdullah1116/opencode-chronicler.git"
+  },
+  "keywords": [
+    "opencode",
+    "mcp",
+    "model-context-protocol",
+    "session-history",
+    "markdown",
+    "bun"
+  ],
+  "scripts": {
+    "dev": "bun run --watch src/index.ts",
+    "start": "bun run src/index.ts",
+    "check": "tsc --noEmit",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.0",
+    "rxjs": "^7.8.2",
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.2",
+    "typescript": "^5"
+  }
+}

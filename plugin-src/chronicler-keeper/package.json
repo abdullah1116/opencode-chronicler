@@ -1,0 +1,7 @@
+{
+  "name": "chronicler-keeper",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "opencode boot plugin that keeps the read-only opencode-chronicler MCP server running.",
+  "private": true
+}
