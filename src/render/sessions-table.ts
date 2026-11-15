@@ -1,6 +1,16 @@
 import type { SessionSummary } from "../domain/types";
+import { formatNumber } from "./format";
 
 const EMPTY_TABLE = "No sessions found.";
+
+export const SESSIONS_TABLE_HEAD_CHARS = 140;
+export const SESSIONS_TABLE_FOOTER_RESERVE_CHARS = 160;
+
+export interface SessionsTableOptions {
+  totalRows?: number;
+  estimatedTokens?: number;
+  tokenBudget?: number;
+}
 
 function escapeCell(value: string): string {
   return value.replace(/\|/g, "\\|").replace(/\r?\n/g, " ");
@@ -15,24 +25,45 @@ function previewCell(value: string | null): string {
   return escapeCell(value).slice(0, 80);
 }
 
-export function renderSessionsTable(summaries: SessionSummary[]): string {
+export function renderSessionRow(summary: SessionSummary): string {
+  const cells = [
+    escapeCell(summary.id),
+    cell(summary.title),
+    String(summary.messageCount),
+    cell(summary.updatedAt),
+    cell(summary.directory),
+    previewCell(summary.preview),
+  ];
+  return `| ${cells.join(" | ")} |`;
+}
+
+export function renderSessionsTable(
+  summaries: SessionSummary[],
+  options?: SessionsTableOptions,
+): string {
   if (summaries.length === 0) return EMPTY_TABLE;
 
-  const rows = summaries.map((s) => {
-    const cells = [
-      escapeCell(s.id),
-      cell(s.title),
-      String(s.messageCount),
-      cell(s.updatedAt),
-      cell(s.directory),
-      previewCell(s.preview),
-    ];
-    return `| ${cells.join(" | ")} |`;
-  });
-
-  return [
+  const lines = [
     "| ID | Title | Msgs | Updated | Directory | Preview |",
     "|---|---|---|---|---|---|",
-    ...rows,
-  ].join("\n");
+    ...summaries.map(renderSessionRow),
+  ];
+
+  const totalRows = options?.totalRows;
+  const omitted = totalRows === undefined ? 0 : Math.max(0, totalRows - summaries.length);
+  if (omitted > 0) {
+    lines.push(
+      "",
+      `_\u2026 ${formatNumber(omitted)} older sessions omitted \u2014 showing the newest ${formatNumber(summaries.length)} of ${formatNumber(totalRows!)}. \u2026_`,
+    );
+  }
+
+  if (options?.estimatedTokens !== undefined && options?.tokenBudget !== undefined) {
+    lines.push(
+      "",
+      `_\u2248${formatNumber(options.estimatedTokens)} of ${formatNumber(options.tokenBudget)} tokens used._`,
+    );
+  }
+
+  return lines.join("\n");
 }

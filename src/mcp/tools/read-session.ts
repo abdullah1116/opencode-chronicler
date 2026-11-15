@@ -1,13 +1,13 @@
 import { EmptyError, firstValueFrom, map } from "rxjs";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import type { ChroniclerDb } from "../../db/opencode-db";
-import { DEFAULT_RENDER_OPTIONS } from "../../domain/types";
-import { renderSession } from "../../render/session-md";
+import { clampTokenBudget, deriveRenderOptions, TOKEN_BUDGET_DEFAULTS } from "../../limits";
+import { renderBoundedDoc } from "../../render/session-md";
 
 export interface ReadSessionInput {
   session_id: string;
   include_tool_output?: boolean;
-  max_part_chars?: number;
+  token_budget?: number;
 }
 
 function errorResult(message: string): CallToolResult {
@@ -16,13 +16,13 @@ function errorResult(message: string): CallToolResult {
 
 export function readSessionHandler(db: ChroniclerDb) {
   return async (input: ReadSessionInput): Promise<CallToolResult> => {
-    const options = {
-      includeToolOutput: input.include_tool_output ?? DEFAULT_RENDER_OPTIONS.includeToolOutput,
-      maxPartChars: input.max_part_chars ?? DEFAULT_RENDER_OPTIONS.maxPartChars,
-    };
+    const tokenBudget = clampTokenBudget(input.token_budget, TOKEN_BUDGET_DEFAULTS.read);
+    const renderOptions = deriveRenderOptions(tokenBudget, input.include_tool_output ?? true);
     try {
       const text = await firstValueFrom(
-        db.loadSessionDoc(input.session_id).pipe(map((doc) => renderSession(doc, options))),
+        db
+          .loadBoundedDoc(input.session_id, { direction: "head", tokenBudget, renderOptions })
+          .pipe(map((doc) => renderBoundedDoc(doc, renderOptions))),
       );
       return { content: [{ type: "text", text }] };
     } catch (error) {
