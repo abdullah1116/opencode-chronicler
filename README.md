@@ -2,9 +2,10 @@
 
 A **read-only** Model Context Protocol server that exposes opencode session
 history as well-formed Markdown over streamable HTTP. Point an MCP client at it,
-ask for a session, and you get back the metadata block, every message in
+ask for a session, and you get back the metadata block, the messages in
 authoritative `seq` order, and the tool calls with their results, rendered as
-clean Markdown. Model reasoning/thinking blocks are omitted by design.
+clean Markdown within a token budget you choose. Model reasoning/thinking blocks
+are omitted by design.
 
 The database is opened with `{ readonly: true }` and is never written to,
 migrated, or locked for writing.
@@ -42,21 +43,42 @@ fast at boot with an error naming the offending variable.
 If the database file does not exist, the server refuses to start rather than
 silently creating an empty one.
 
+## The budget model
+
+Every tool that returns a variable-size document accepts exactly one limit:
+`token_budget`, measured in **approximate tokens of rendered Markdown**
+(`ceil(chars / 3.5)`, always reported with `≈`). There are no message-count or
+character limits anywhere in the API.
+
+| Property | Rule |
+|---|---|
+| Range | `1_000` – `2_000_000`, clamped by the server |
+| Defaults | `read_session` 150 000 · `tail_session` 150 000 · `list_sessions` 1 000 |
+| Overflow | the window stops at a message boundary and the response states how many messages were omitted, and from which end |
+| Single oversized message | included anyway, with its parts truncated to fit |
+| Per-part cap | derived from the budget: 25 % of it, floored at 500 and capped at 8 000 tokens per part |
+
+Every session document reports its usage as `- **Tokens**: ≈N of M budget`, and
+every truncated listing reports `_≈N of M tokens used._`.
+
 ## MCP tools
 
 ### `read_session`
 
-Render one opencode session as Markdown: a metadata block (id, directory,
-timestamps, project, parent, version, message count), a horizontal rule, then one
-`## <role> — <time>` section per message in `seq` order.
+Render one opencode session as Markdown from the beginning: a metadata block
+(id, directory, timestamps, project, parent, version, message count, budget),
+a horizontal rule, then one `## <role> — <time>` section per message in `seq`
+order.
 
 | Parameter | Type | Default | Notes |
 |---|---|---|---|
 | `session_id` | string (min 1) | — | opencode session id, e.g. `ses_...`. |
 | `include_tool_output` | boolean | `true` | Include tool-result output in the Markdown. |
-| `max_part_chars` | int, 100–50000 | `2000` | Per-part truncation budget. |
+| `token_budget` | int, 1000–2000000 | `150000` | Approximate token budget for the rendered document. |
 
-Model reasoning/thinking blocks are omitted from the output.
+Model reasoning/thinking blocks are omitted from the output. When the session is
+larger than the budget, the response keeps the oldest messages that fit and adds
+`_… N later messages omitted — showing the first K of T. …_`.
 
 Example call:
 
@@ -65,7 +87,7 @@ Example call:
   "name": "read_session",
   "arguments": {
     "session_id": "ses_11111111111111111111111111",
-    "max_part_chars": 4000
+    "token_budget": 20000
   }
 }
 ```
@@ -83,6 +105,7 @@ Example output (abridged):
 - **Parent**: ses_11111111111111111111111112 — subagent session
 - **Version**: 1.0.0
 - **Messages**: 2
+- **Tokens**: ≈431 of 20,000 budget
 
 ---
 
@@ -108,19 +131,41 @@ main
 An unknown session id returns an error result with the text
 `Session not found: <id>`.
 
-### `list_sessions`
+### `tail_session`
 
-List recent sessions newest-first as a Markdown table.
+Render the **newest** messages of a session as Markdown, walking backwards in
+`seq` order until the budget is filled. Same metadata block and message format as
+`read_session`, same parameters, same defaults.
 
-| Parameter | Type | Default | Notes |
-|---|---|---|---|
-| `query` | string | — | Case-insensitive filter on title or directory. |
-| `limit` | int, 1–200 | `20` | Maximum rows to return. |
+When earlier messages do not fit, the response adds
+`_… N earlier messages omitted — showing the last K of T. …_`. When the budget
+covers the whole session, the output is identical to `read_session`.
 
 Example call:
 
 ```json
-{ "name": "list_sessions", "arguments": { "limit": 5 } }
+{
+  "name": "tail_session",
+  "arguments": {
+    "session_id": "ses_11111111111111111111111111",
+    "token_budget": 150000
+  }
+}
+```
+
+### `list_sessions`
+
+List recent sessions newest-first as a Markdown table, within `token_budget`.
+
+| Parameter | Type | Default | Notes |
+|---|---|---|---|
+| `query` | string | — | Case-insensitive filter on title or directory. |
+| `token_budget` | int, 1000–2000000 | `1000` | Approximate token budget for the rendered table (about 19 rows at the 1 000 default). |
+
+Example call:
+
+```json
+{ "name": "list_sessions", "arguments": { "token_budget": 1000 } }
 ```
 
 Example output:
@@ -129,9 +174,22 @@ Example output:
 | ID | Title | Msgs | Updated | Directory | Preview |
 |---|---|---|---|---|---|
 | ses_11111111111111111111111111 | Alpha Session | 2 | 2026-01-01T00:00:05.000Z | /home/you/projects/alpha | Summarize the release notes. |
+
+_≈125 of 1,000 tokens used._
 ```
 
 When no sessions match, the tool returns the single line `No sessions found.`
+
+## Breaking changes in 0.2.0
+
+- `list_sessions.limit` was removed; use `token_budget`.
+- `read_session.max_part_chars` was removed; the per-part cap is derived from
+  `token_budget`.
+- `read_session` is now bounded by `token_budget` (default 150 000); sessions
+  larger than that are head-truncated with a notice. Pass
+  `token_budget: 2000000` for the previous unbounded behaviour.
+- Output now always includes a `- **Tokens**:` line. Old callers passing either
+  removed parameter get an explicit MCP validation error.
 
 ## Connecting an MCP client
 
@@ -214,22 +272,25 @@ array.
 |---|---|
 | `config/env.ts` | Env → `AppConfig` (db path, directory, log path). |
 | `log.ts` | Level-filtered logger. |
-| `domain/types.ts` | Frozen type contract shared by the data and render layers. |
+| `limits.ts` | **The single limit type**: clamp, token estimate, per-part derivation, defaults. |
+| `domain/types.ts` | Frozen type contract shared by the data, budget and render layers. |
 | `db/rows.ts` | Schemas for raw `session_v2` / `session_message` rows. |
 | `db/opencode-db.ts` | Read-only `bun:sqlite` handle plus the `ChroniclerDb` facade. |
 | `db/v2parse.ts` | v2 row JSON → domain shapes (defensive, never throws). |
-| `db/queries.ts` | `listSessions$`, `loadSessionDoc$` RxJS pipelines. |
-| `render/session-md.ts` | `renderSession(doc, opts)`. |
-| `render/sessions-table.ts` | `renderSessionsTable(summaries)`. |
+| `db/queries.ts` | Meta/count, keyset message pages, session pages — primitives only. |
+| `budget/window.ts` | `loadBoundedDoc$`: one selector for `head` and `tail` windows. |
+| `budget/table.ts` | `loadBoundedSessions$`: budgeted session listing. |
+| `render/session-md.ts` | `renderBoundedDoc(doc, opts)` — header, budget lines, notices, body. |
+| `render/sessions-table.ts` | `renderSessionsTable(rows, options)` and per-row rendering. |
 | `render/parts.ts` | Per-kind part renderer registry with a never-crash fallback. |
-| `mcp/server-factory.ts` | Builds a fresh `McpServer` with both tools registered. |
+| `mcp/server-factory.ts` | Builds a fresh `McpServer` with all three tools registered. |
 | `mcp/http.ts` | `Bun.serve` routing: stateless `/mcp`, `/health`. |
-| `mcp/tools/*.ts` | The `read_session` and `list_sessions` handlers. |
+| `mcp/tools/*.ts` | The `read_session`, `tail_session` and `list_sessions` handlers. |
 | `index.ts` | Boot: env → logger → DB → HTTP app → graceful shutdown. |
 
-Data flows through RxJS end to end: tool input → deferred DB read → `v2parse` →
-`toArray` → `map(render)` → `Observable<string>`, with `firstValueFrom` the only
-Promise-shaped edge, inside the MCP handler.
+Data flows through RxJS end to end: tool input → clamped budget → deferred DB
+pages → `v2parse` → budgeted selection → `map(render)` → `Observable<string>`,
+with `firstValueFrom` the only Promise-shaped edge, inside the MCP handler.
 
 Each `/mcp` request constructs a fresh `McpServer` and a fresh single-use
 transport, so there is no session state to leak between callers.

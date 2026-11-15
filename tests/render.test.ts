@@ -1,13 +1,15 @@
 import { describe, test, expect } from "bun:test";
 import { DEFAULT_RENDER_OPTIONS } from "../src/domain/types";
 import type {
+  BoundedDoc,
   ChroniclerPart,
   RenderOptions,
   SessionDoc,
   SessionSummary,
 } from "../src/domain/types";
+import { TOKEN_BUDGET_DEFAULTS } from "../src/limits";
 import { renderPart, longestBacktickRun, truncate } from "../src/render/parts";
-import { renderSession } from "../src/render/session-md";
+import { renderBoundedDoc } from "../src/render/session-md";
 import { renderSessionsTable } from "../src/render/sessions-table";
 
 const OPTS: RenderOptions = { includeToolOutput: true, maxPartChars: 2000 };
@@ -26,10 +28,14 @@ function meta(overrides: Partial<SessionDoc["meta"]> = {}): SessionDoc["meta"] {
   };
 }
 
-function doc(parts: ChroniclerPart[] = [], overrides: Partial<SessionDoc["meta"]> = {}): SessionDoc {
+function doc(parts: ChroniclerPart[] = [], overrides: Partial<SessionDoc["meta"]> = {}): BoundedDoc {
   return {
     meta: meta(overrides),
-    messages: [{ id: "msg_1", role: "user", time: "2026-01-01T00:00:00Z", parts }],
+    messages: [{ id: "msg_1", seq: 1, role: "user", time: "2026-01-01T00:00:00Z", parts }],
+    totalMessages: 1,
+    direction: "head",
+    tokenBudget: TOKEN_BUDGET_DEFAULTS.tail,
+    truncatedBoundary: false,
   };
 }
 
@@ -140,9 +146,9 @@ describe("renderPart — safety", () => {
   });
 });
 
-describe("renderSession", () => {
-  test("renders full metadata header and message count", () => {
-    const out = renderSession(doc([{ kind: "text", text: "hi" }]));
+describe("renderBoundedDoc", () => {
+  test("renders full metadata header, message count and token line", () => {
+    const out = renderBoundedDoc(doc([{ kind: "text", text: "hi" }]), OPTS);
     expect(out).toContain("# Demo");
     expect(out).toContain("- **ID**: `ses_1`");
     expect(out).toContain("- **Directory**: /tmp/demo");
@@ -152,13 +158,15 @@ describe("renderSession", () => {
     expect(out).toContain("- **Parent**: —");
     expect(out).toContain("- **Version**: 1.18.18");
     expect(out).toContain("- **Messages**: 1");
+    expect(out).toMatch(/- \*\*Tokens\*\*: ≈[\d,]+ of 150,000 budget/);
     expect(out).toContain("\n---\n");
     expect(out).toContain("hi");
   });
 
   test("falls back to id when title is null, and em-dash for null metadata", () => {
-    const out = renderSession(
+    const out = renderBoundedDoc(
       doc([], { title: null, directory: null, createdAt: null, updatedAt: null, projectID: null, version: null }),
+      OPTS,
     );
     expect(out).toContain("# ses_1");
     expect(out).toContain("- **Directory**: —");
@@ -169,49 +177,104 @@ describe("renderSession", () => {
   });
 
   test("appends subagent marker when parentID is set", () => {
-    const out = renderSession(doc([], { parentID: "ses_parent" }));
+    const out = renderBoundedDoc(doc([], { parentID: "ses_parent" }), OPTS);
     expect(out).toContain("- **Parent**: ses_parent — subagent session");
   });
 
-  test("zero messages emits the frozen placeholder", () => {
-    const out = renderSession({ meta: meta(), messages: [] });
+  test("zero messages emits the placeholder without notices", () => {
+    const out = renderBoundedDoc({ ...doc([]), messages: [], totalMessages: 0 }, OPTS);
     expect(out.endsWith("_No messages recorded._")).toBe(true);
+    expect(out).not.toContain("omitted");
   });
 
   test("message heading falls back to 'time unknown' and keeps empty-part messages", () => {
-    const out = renderSession({
-      meta: meta(),
-      messages: [
-        { id: "m1", role: "assistant", time: null, parts: [] },
-        { id: "m2", role: "system", time: null, parts: [{ kind: "step-start", meta: null }] },
-      ],
-    });
+    const out = renderBoundedDoc(
+      {
+        ...doc([]),
+        messages: [
+          { id: "m1", seq: 1, role: "assistant", time: null, parts: [] },
+          { id: "m2", seq: 2, role: "system", time: null, parts: [{ kind: "step-start", meta: null }] },
+        ],
+        totalMessages: 2,
+      },
+      OPTS,
+    );
     expect(out).toContain("## assistant — time unknown");
     expect(out).toContain("## system — time unknown");
     expect(out).toContain("- **Messages**: 2");
   });
 
   test("joins multiple rendered parts with a blank line", () => {
-    const out = renderSession(doc([{ kind: "text", text: "one" }, { kind: "text", text: "two" }]));
+    const out = renderBoundedDoc(doc([{ kind: "text", text: "one" }, { kind: "text", text: "two" }]), OPTS);
     expect(out).toContain("## user — 2026-01-01T00:00:00Z\n\none\n\ntwo");
   });
 
   test("reasoning parts never appear in session output", () => {
-    const out = renderSession(doc([{ kind: "reasoning", text: "secret thinking" }]));
+    const out = renderBoundedDoc(doc([{ kind: "reasoning", text: "secret thinking" }]), OPTS);
     expect(out).not.toContain("Reasoning");
     expect(out).not.toContain("secret thinking");
   });
 
   test("hidden reasoning does not shift neighbouring parts", () => {
-    const withReasoning = renderSession(
+    const withReasoning = renderBoundedDoc(
       doc([
         { kind: "text", text: "one" },
         { kind: "reasoning", text: "think" },
         { kind: "text", text: "two" },
       ]),
+      OPTS,
     );
-    const without = renderSession(doc([{ kind: "text", text: "one" }, { kind: "text", text: "two" }]));
+    const without = renderBoundedDoc(doc([{ kind: "text", text: "one" }, { kind: "text", text: "two" }]), OPTS);
     expect(withReasoning).toBe(without);
+  });
+
+  test("head omission reads as 'showing the first N'", () => {
+    const out = renderBoundedDoc(
+      {
+        ...doc([{ kind: "text", text: "one" }]),
+        messages: [
+          { id: "m1", seq: 1, role: "user", time: "2026-01-01T00:00:00Z", parts: [{ kind: "text", text: "one" }] },
+          { id: "m2", seq: 2, role: "assistant", time: "2026-01-01T00:00:01Z", parts: [{ kind: "text", text: "two" }] },
+        ],
+        totalMessages: 12,
+        direction: "head",
+      },
+      OPTS,
+    );
+    expect(out).toContain("- **Messages**: 12 (showing first 2)");
+    expect(out).toContain("_… 10 later messages omitted — showing the first 2 of 12. …_");
+  });
+
+  test("tail omission reads as 'showing the last N'", () => {
+    const out = renderBoundedDoc(
+      {
+        ...doc([{ kind: "text", text: "one" }]),
+        messages: [
+          { id: "m1", seq: 1, role: "user", time: "2026-01-01T00:00:00Z", parts: [{ kind: "text", text: "one" }] },
+          { id: "m2", seq: 2, role: "assistant", time: "2026-01-01T00:00:01Z", parts: [{ kind: "text", text: "two" }] },
+        ],
+        totalMessages: 12,
+        direction: "tail",
+      },
+      OPTS,
+    );
+    expect(out).toContain("- **Messages**: 12 (showing last 2)");
+    expect(out).toContain("_… 10 earlier messages omitted — showing the last 2 of 12. …_");
+  });
+
+  test("boundary truncation is announced and shrinks that message's part cap", () => {
+    const payload = "q".repeat(50_000);
+    const out = renderBoundedDoc(
+      {
+        ...doc([{ kind: "text", text: payload }]),
+        tokenBudget: 1_000,
+        truncatedBoundary: true,
+      },
+      { includeToolOutput: true, maxPartChars: 28_000 },
+    );
+    expect(out).toContain("_… one message was truncated to fit the ≈1,000-token budget. …_");
+    expect(out).toContain("[truncated");
+    expect(out).not.toContain(payload);
   });
 });
 
@@ -257,5 +320,21 @@ describe("renderSessionsTable", () => {
   test("null preview renders as an empty cell", () => {
     const out = renderSessionsTable([{ ...base, preview: null }]);
     expect(out.split("\n")[2]?.endsWith("|  |")).toBe(true);
+  });
+
+  test("options add the omission notice and the token footer", () => {
+    const out = renderSessionsTable([base], {
+      totalRows: 10,
+      estimatedTokens: 980,
+      tokenBudget: 1_000,
+    });
+    expect(out).toContain("_… 9 older sessions omitted — showing the newest 1 of 10. …_");
+    expect(out).toContain("_≈980 of 1,000 tokens used._");
+  });
+
+  test("no options means no notice and no footer", () => {
+    const out = renderSessionsTable([base]);
+    expect(out).not.toContain("omitted");
+    expect(out).not.toContain("tokens used");
   });
 });

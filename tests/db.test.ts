@@ -4,17 +4,24 @@ import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Observable } from "rxjs";
+import { loadBoundedDoc$ } from "../src/budget/window";
+import { loadBoundedSessions$ } from "../src/budget/table";
 import {
-  listSessions$,
-  loadSessionDoc$,
+  countSessions$,
+  listSessionPage$,
+  loadMessagePage$,
+  loadSessionMetaCount$,
 } from "../src/db/queries";
 import { createChroniclerDb, openDatabase } from "../src/db/opencode-db";
 import { loadEnv } from "../src/config/env";
 import { parseSessionMessage, parseSessionMeta, toIso } from "../src/db/v2parse";
 import type { SessionMessageRow } from "../src/db/rows";
+import type { BoundedDoc } from "../src/domain/types";
+import { deriveRenderOptions } from "../src/limits";
 
 const FIXTURE_DIR = mkdtempSync(join(tmpdir(), "chronicler-db-"));
 const FIXTURE_DB = join(FIXTURE_DIR, "fixture.db");
+const WHOLE = 2_000_000;
 
 function collect<T>(obs: Observable<T>): Promise<T[]> {
   return new Promise((resolve, reject) => {
@@ -24,6 +31,14 @@ function collect<T>(obs: Observable<T>): Promise<T[]> {
       error: reject,
       complete: () => resolve(out),
     });
+  });
+}
+
+function readDoc(db: Database, id: string, direction: "head" | "tail" = "head"): Observable<BoundedDoc> {
+  return loadBoundedDoc$(db, id, {
+    direction,
+    tokenBudget: WHOLE,
+    renderOptions: deriveRenderOptions(WHOLE, true),
   });
 }
 
@@ -155,26 +170,28 @@ describe("parseSessionMeta / ISO conversion", () => {
   });
 });
 
-describe("loadSessionDoc$", () => {
+describe("loadBoundedDoc$ (head, whole session)", () => {
   test("orders messages by seq ONLY (sparse seq preserved)", async () => {
     const db = openDatabase(FIXTURE_DB);
-    const docs = await collect(loadSessionDoc$(db, "s1"));
+    const docs = await collect(readDoc(db, "s1"));
     db.close();
     expect(docs.length).toBe(1);
     const seqIds = ["m-user", "m-assistant", "m-synthetic", "m-idle", "m-model", "m-agent", "m-compact", "m-malformed", "m-unknown-type", "m-empty"];
     expect(docs[0]!.messages.map((m) => m.id)).toEqual(seqIds);
+    expect(docs[0]!.messages.map((m) => m.seq)).toEqual([4, 10, 20, 30, 40, 50, 60, 65, 70, 681]);
+    expect(docs[0]!.totalMessages).toBe(10);
   });
 
   test("not-found yields an empty Observable (0 emissions)", async () => {
     const db = openDatabase(FIXTURE_DB);
-    const docs = await collect(loadSessionDoc$(db, "does-not-exist"));
+    const docs = await collect(readDoc(db, "does-not-exist"));
     db.close();
     expect(docs).toEqual([]);
   });
 
   test("assistant: tool-call/tool-result pairing with equal callID", async () => {
     const db = openDatabase(FIXTURE_DB);
-    const docs = await collect(loadSessionDoc$(db, "s1"));
+    const docs = await collect(readDoc(db, "s1"));
     db.close();
     const parts = docs[0]!.messages.find((m) => m.id === "m-assistant")!.parts;
     const calls = parts.filter((p) => p.kind === "tool-call");
@@ -193,7 +210,7 @@ describe("loadSessionDoc$", () => {
 
   test("completed tool joins content text; error tool prefers state.error", async () => {
     const db = openDatabase(FIXTURE_DB);
-    const docs = await collect(loadSessionDoc$(db, "s1"));
+    const docs = await collect(readDoc(db, "s1"));
     db.close();
     const parts = docs[0]!.messages.find((m) => m.id === "m-assistant")!.parts;
     const ok = parts.find((p) => p.kind === "tool-result" && p.callID === "call_1");
@@ -206,7 +223,7 @@ describe("loadSessionDoc$", () => {
 
   test("unknown content part maps to kind:'unknown' without throwing", async () => {
     const db = openDatabase(FIXTURE_DB);
-    const docs = await collect(loadSessionDoc$(db, "s1"));
+    const docs = await collect(readDoc(db, "s1"));
     db.close();
     const parts = docs[0]!.messages.find((m) => m.id === "m-assistant")!.parts;
     const unknown = parts.find((p) => p.kind === "unknown");
@@ -215,7 +232,7 @@ describe("loadSessionDoc$", () => {
 
   test("assistant finish/cost/tokens append one trailing step-finish", async () => {
     const db = openDatabase(FIXTURE_DB);
-    const docs = await collect(loadSessionDoc$(db, "s1"));
+    const docs = await collect(readDoc(db, "s1"));
     db.close();
     const parts = docs[0]!.messages.find((m) => m.id === "m-assistant")!.parts;
     const last = parts[parts.length - 1]!;
@@ -230,7 +247,7 @@ describe("loadSessionDoc$", () => {
 
   test("user text + files → text part then file parts (basename from url)", async () => {
     const db = openDatabase(FIXTURE_DB);
-    const docs = await collect(loadSessionDoc$(db, "s1"));
+    const docs = await collect(readDoc(db, "s1"));
     db.close();
     const parts = docs[0]!.messages.find((m) => m.id === "m-user")!.parts;
     expect(parts[0]).toEqual({ kind: "text", text: "Hello alpha" });
@@ -240,7 +257,7 @@ describe("loadSessionDoc$", () => {
 
   test("empty user message yields an empty parts array", async () => {
     const db = openDatabase(FIXTURE_DB);
-    const docs = await collect(loadSessionDoc$(db, "s1"));
+    const docs = await collect(readDoc(db, "s1"));
     db.close();
     const msg = docs[0]!.messages.find((m) => m.id === "m-empty")!;
     expect(msg.role).toBe("user");
@@ -249,7 +266,7 @@ describe("loadSessionDoc$", () => {
 
   test("malformed JSON data never throws → unknown part", async () => {
     const db = openDatabase(FIXTURE_DB);
-    const docs = await collect(loadSessionDoc$(db, "s1"));
+    const docs = await collect(readDoc(db, "s1"));
     db.close();
     const msg = docs[0]!.messages.find((m) => m.id === "m-malformed")!;
     expect(msg.parts.some((p) => p.kind === "unknown")).toBe(true);
@@ -257,7 +274,7 @@ describe("loadSessionDoc$", () => {
 
   test("unknown message type → role system + unknown part", async () => {
     const db = openDatabase(FIXTURE_DB);
-    const docs = await collect(loadSessionDoc$(db, "s1"));
+    const docs = await collect(readDoc(db, "s1"));
     db.close();
     const msg = docs[0]!.messages.find((m) => m.id === "m-unknown-type")!;
     expect(msg.role).toBe("system");
@@ -265,44 +282,55 @@ describe("loadSessionDoc$", () => {
   });
 });
 
-describe("lifecycle mappings", () => {
-  test("synthetic/idle/model-switched/agent-switched/compaction → status parts", async () => {
+describe("loadSessionMetaCount$", () => {
+  test("returns meta plus the true message count", async () => {
     const db = openDatabase(FIXTURE_DB);
-    const docs = await collect(loadSessionDoc$(db, "s1"));
+    const values = await collect(loadSessionMetaCount$(db, "s1"));
     db.close();
-    const byId = (id: string) => docs[0]!.messages.find((m) => m.id === id)!;
-
-    expect(byId("m-synthetic").role).toBe("system");
-    expect(byId("m-synthetic").parts[0]).toEqual({ kind: "status", type: "synthetic", detail: "synthetic note" });
-    expect(byId("m-idle").parts[0]).toEqual({ kind: "status", type: "idle", detail: "idled" });
-    expect(byId("m-model").parts[0]).toEqual({ kind: "status", type: "model-switched", detail: "gpt-x (was gpt-w)" });
-    expect(byId("m-agent").parts[0]).toEqual({ kind: "status", type: "agent-switched", detail: "build (was plan)" });
-    expect(byId("m-compact").parts[0]).toEqual({ kind: "status", type: "compaction", detail: "context full" });
+    expect(values.length).toBe(1);
+    expect(values[0]!.meta.id).toBe("s1");
+    expect(values[0]!.totalMessages).toBe(10);
   });
 
-  test("message time uses data.time.created, falls back to time_created", () => {
-    const base: SessionMessageRow = {
-      id: "x", session_id: "s", type: "idle", seq: 1, time_created: 777, time_updated: 777, data: null,
-    };
-    const withData = parseSessionMessage(base);
-    expect(withData.time).toBe(new Date(777).toISOString());
-    const explicit = parseSessionMessage({ ...base, data: JSON.stringify({ time: { created: 999 } }) });
-    expect(explicit.time).toBe(new Date(999).toISOString());
+  test("unknown id yields no emissions", async () => {
+    const db = openDatabase(FIXTURE_DB);
+    const values = await collect(loadSessionMetaCount$(db, "nope"));
+    db.close();
+    expect(values).toEqual([]);
   });
 });
 
-describe("listSessions$", () => {
-  test("orders by time_updated DESC and counts messages / resolves preview", async () => {
+describe("loadMessagePage$", () => {
+  test("forward pages ascend and resume after the last seq", async () => {
     const db = openDatabase(FIXTURE_DB);
-    const lists = await collect(listSessions$(db, {}));
+    const first = await collect(loadMessagePage$(db, "s1", { direction: "forward", limit: 3 }));
+    const next = await collect(loadMessagePage$(db, "s1", { direction: "forward", cursor: 20, limit: 3 }));
     db.close();
-    expect(lists.length).toBe(1);
-    const rows = lists[0]!;
-    expect(rows.map((r) => r.id)).toEqual(["s2", "s3", "s1", "s4"]);
-    const s1 = rows.find((r) => r.id === "s1")!;
+    expect(first[0]!.map((m) => m.seq)).toEqual([4, 10, 20]);
+    expect(next[0]!.map((m) => m.seq)).toEqual([30, 40, 50]);
+  });
+
+  test("backward pages are returned ascending and resume before the first seq", async () => {
+    const db = openDatabase(FIXTURE_DB);
+    const page = await collect(loadMessagePage$(db, "s1", { direction: "backward", cursor: 70, limit: 3 }));
+    const older = await collect(loadMessagePage$(db, "s1", { direction: "backward", cursor: 50, limit: 2 }));
+    db.close();
+    expect(page[0]!.map((m) => m.seq)).toEqual([50, 60, 65]);
+    expect(older[0]!.map((m) => m.seq)).toEqual([30, 40]);
+  });
+});
+
+describe("listSessionPage$ / countSessions$", () => {
+  test("orders by time_updated DESC and resolves previews and counts", async () => {
+    const db = openDatabase(FIXTURE_DB);
+    const pages = await collect(listSessionPage$(db, {}));
+    db.close();
+    const rows = pages[0]!;
+    expect(rows.map((r) => r.summary.id)).toEqual(["s2", "s3", "s1", "s4"]);
+    const s1 = rows.find((r) => r.summary.id === "s1")!.summary;
     expect(s1.messageCount).toBe(10);
     expect(s1.preview).toBe("Hello alpha");
-    const s3 = rows.find((r) => r.id === "s3")!;
+    const s3 = rows.find((r) => r.summary.id === "s3")!.summary;
     expect(s3.preview).toBeNull();
     expect(s3.messageCount).toBe(0);
     expect(s3.updatedAt).toBe(new Date(4000).toISOString());
@@ -310,28 +338,92 @@ describe("listSessions$", () => {
 
   test("query filters case-insensitive LIKE on title OR directory", async () => {
     const db = openDatabase(FIXTURE_DB);
-    const byTitle = await collect(listSessions$(db, { query: "alpha" }));
-    const byDir = await collect(listSessions$(db, { query: "GAMMA" }));
+    const byTitle = await collect(listSessionPage$(db, { query: "alpha" }));
+    const byDir = await collect(listSessionPage$(db, { query: "GAMMA" }));
     db.close();
-    expect(byTitle[0]!.map((r) => r.id)).toEqual(["s1"]);
-    expect(byDir[0]!.map((r) => r.id)).toEqual(["s3"]);
+    expect(byTitle[0]!.map((r) => r.summary.id)).toEqual(["s1"]);
+    expect(byDir[0]!.map((r) => r.summary.id)).toEqual(["s3"]);
   });
 
-  test("limit clamps to [1,200] and default 20", async () => {
+  test("cursor paging continues after the last row without gaps", async () => {
     const db = openDatabase(FIXTURE_DB);
-    const limited = await collect(listSessions$(db, { limit: 2 }));
-    const capped = await collect(listSessions$(db, { limit: 9999 }));
+    const first = await collect(listSessionPage$(db, { limit: 2 }));
+    const last = first[0]![1]!;
+    const second = await collect(
+      listSessionPage$(db, {
+        limit: 2,
+        before: { timeUpdated: last.sortMs!, id: last.summary.id },
+      }),
+    );
     db.close();
-    expect(limited[0]!.length).toBe(2);
-    expect(capped[0]!.length).toBe(4);
+    expect(first[0]!.map((r) => r.summary.id)).toEqual(["s2", "s3"]);
+    expect(second[0]!.map((r) => r.summary.id)).toEqual(["s1", "s4"]);
   });
 
-  test("createChroniclerDb wires config → observable facade", async () => {
-    const db = createChroniclerDb(loadEnv({ OPENCODE_DB_PATH: FIXTURE_DB }));
-    const lists = await collect(db.listSessions({ query: "beta" }));
-    const docs = await collect(db.loadSessionDoc("s2"));
-    db.raw.close();
-    expect(lists[0]!.map((r) => r.id)).toEqual(["s2"]);
-    expect(docs[0]!.meta.id).toBe("s2");
+  test("countSessions$ respects the filter", async () => {
+    const db = openDatabase(FIXTURE_DB);
+    const all = await collect(countSessions$(db, {}));
+    const filtered = await collect(countSessions$(db, { query: "beta" }));
+    db.close();
+    expect(all[0]).toBe(4);
+    expect(filtered[0]).toBe(1);
   });
+});
+
+describe("loadBoundedSessions$", () => {
+  test("returns every row when the budget is ample", async () => {
+    const db = openDatabase(FIXTURE_DB);
+    const pages = await collect(loadBoundedSessions$(db, { tokenBudget: 1_000 }));
+    db.close();
+    expect(pages[0]!.totalRows).toBe(4);
+    expect(pages[0]!.rows.map((r) => r.id)).toEqual(["s2", "s3", "s1", "s4"]);
+    expect(pages[0]!.estimatedTokens).toBeGreaterThan(0);
+  });
+
+  test("stops at the budget boundary and reports the total", async () => {
+    const db = openDatabase(FIXTURE_DB);
+    const pages = await collect(loadBoundedSessions$(db, { tokenBudget: 1_000 }));
+    db.close();
+    expect(pages[0]!.rows.length).toBeLessThanOrEqual(pages[0]!.totalRows);
+  });
+});
+
+describe("createChroniclerDb wiring", () => {
+  test("config → observable facade for docs and lists", async () => {
+    const db = createChroniclerDb(loadEnv({ OPENCODE_DB_PATH: FIXTURE_DB }));
+    const tokenBudget = WHOLE;
+    const docs = await collect(
+      db.loadBoundedDoc("s2", {
+        direction: "head",
+        tokenBudget,
+        renderOptions: deriveRenderOptions(tokenBudget, true),
+      }),
+    );
+    const lists = await collect(db.loadBoundedSessions({ query: "beta", tokenBudget: 1_000 }));
+    db.raw.close();
+    expect(docs[0]!.meta.id).toBe("s2");
+    expect(lists[0]!.rows.map((r) => r.id)).toEqual(["s2"]);
+  });
+});
+
+test("lifecycle mappings stay intact", async () => {
+  const db = openDatabase(FIXTURE_DB);
+  const docs = await collect(readDoc(db, "s1"));
+  db.close();
+  const byId = (id: string) => docs[0]!.messages.find((m) => m.id === id)!;
+
+  expect(byId("m-synthetic").role).toBe("system");
+  expect(byId("m-synthetic").parts[0]).toEqual({ kind: "status", type: "synthetic", detail: "synthetic note" });
+  expect(byId("m-idle").parts[0]).toEqual({ kind: "status", type: "idle", detail: "idled" });
+  expect(byId("m-model").parts[0]).toEqual({ kind: "status", type: "model-switched", detail: "gpt-x (was gpt-w)" });
+  expect(byId("m-agent").parts[0]).toEqual({ kind: "status", type: "agent-switched", detail: "build (was plan)" });
+  expect(byId("m-compact").parts[0]).toEqual({ kind: "status", type: "compaction", detail: "context full" });
+
+  const base: SessionMessageRow = {
+    id: "x", session_id: "s", type: "idle", seq: 1, time_created: 777, time_updated: 777, data: null,
+  };
+  expect(parseSessionMessage(base).time).toBe(new Date(777).toISOString());
+  expect(parseSessionMessage({ ...base, data: JSON.stringify({ time: { created: 999 } }) }).time).toBe(
+    new Date(999).toISOString(),
+  );
 });

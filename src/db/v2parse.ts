@@ -208,7 +208,7 @@ function parseLifecycleMessage(row: SessionMessageRow): SessionMessage {
         parts = [unknownPart(row.type, data ?? row.data)];
     }
   }
-  return { id: row.id, role: "system", time, parts };
+  return { id: row.id, seq: row.seq, role: "system", time, parts };
 }
 
 export function parseSessionMessage(row: SessionMessageRow): SessionMessage {
@@ -220,5 +220,5 @@ export function parseSessionMessage(row: SessionMessageRow): SessionMessage {
     : role === "assistant"
       ? parseAssistant(data)
       : parseUser(data);
-  return { id: row.id, role, time: messageTime(data, row), parts };
+  return { id: row.id, seq: row.seq, role, time: messageTime(data, row), parts };
 }

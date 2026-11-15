@@ -16,7 +16,7 @@ console.log("CONNECTED");
 const tools = await client.listTools();
 console.log("TOOLS=" + JSON.stringify(tools.tools.map((t) => t.name)));
 
-const list = await client.callTool({ name: "list_sessions", arguments: { limit: 3 } });
+const list = await client.callTool({ name: "list_sessions", arguments: { token_budget: 1_000 } });
 const listText = list.content.map((c) => c.text ?? "").join("");
 console.log("LIST_SESSIONS_LEN=" + listText.length);
 console.log("LIST_SESSIONS_HEAD=" + JSON.stringify(listText.slice(0, 160)));
@@ -27,6 +27,11 @@ console.log("READ_SESSION_ID=" + sessionId);
 console.log("READ_SESSION_LEN=" + readText.length);
 console.log("READ_SESSION_STARTS_HASH=" + readText.startsWith("# "));
 console.log("READ_SESSION_HEAD=" + JSON.stringify(readText.slice(0, 120)));
+
+const tail = await client.callTool({ name: "tail_session", arguments: { session_id: sessionId, token_budget: 20_000 } });
+const tailText = tail.content.map((c) => c.text ?? "").join("");
+console.log("TAIL_SESSION_LEN=" + tailText.length);
+console.log("TAIL_SESSION_HAS_TOKENS=" + tailText.includes("**Tokens**"));
 
 await client.close();
 console.log("DONE");
