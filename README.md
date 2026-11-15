@@ -27,64 +27,6 @@ bun run start          # boots src/index.ts
 The server listens on port `31701`: MCP is served at `/mcp` and a liveness probe
 at `/health`.
 
-## Commands
-
-Every command the project supports, verbatim.
-
-### Install and boot
-
-| Command | What it does |
-|---|---|
-| `git clone --depth 1 git@github.com:abdullah1116/opencode-chronicler.git` | clone the repository |
-| `bun install` | install dependencies (`@modelcontextprotocol/sdk`, `rxjs`, `zod`) |
-| `bun run start` | boot the server on `0.0.0.0:31701` |
-| `bun run dev` | boot with file watching (`bun --watch`) |
-| `PORT=4000 bun run start` | boot on a different port |
-| `LOG_LEVEL=debug bun run start` | boot with debug logging |
-| `OPENCODE_DB_PATH=/path/to/opencode.db bun run start` | boot against a specific database |
-
-### Check and test
-
-| Command | What it does |
-|---|---|
-| `bun run check` | `tsc --noEmit` — strict TypeScript, ESM |
-| `bun test` | full suite: unit + fixture-backed HTTP end-to-end |
-| `bun test tests/db.test.ts` | one test file |
-| `bun test tests/budget.test.ts tests/render.test.ts` | several files |
-| `bun test -t "tail"` | only tests whose name matches a pattern |
-| `OPENCODE_DB_PATH=~/.local/share/opencode/opencode.db bun test tests/e2e` | end-to-end against a live database |
-| `OPENCODE_E2E_SESSION=ses_... bun test tests/e2e` | same, plus live session rendering and the byte-identical DB check |
-| `OPENCODE_DB_PATH=... OPENCODE_E2E_SESSION=ses_... bun test` | the whole suite including live cases |
-
-Without `OPENCODE_DB_PATH` or with no matching database, the live end-to-end
-cases skip with a message instead of failing. Fingerprinting a large database
-takes seconds — the end-to-end hooks allow 120 s.
-
-### Probe a running server
-
-```bash
-bun run start &                                                      # terminal 1
-bun plugin-src/chronicler-keeper/mcp-probe.mjs ses_...               # terminal 2
-
-CHRONICLER_URL=http://127.0.0.1:4000/mcp \
-  bun plugin-src/chronicler-keeper/mcp-probe.mjs ses_...             # non-default port
-```
-
-`mcp-probe.mjs` connects over HTTP, lists the tools, then calls `list_sessions`,
-`read_session` and `tail_session` and prints lengths/heads. It accepts the
-session id as an argument or via `OPENCODE_E2E_SESSION`, and the endpoint via
-`CHRONICLER_URL` (default `http://127.0.0.1:31701/mcp`).
-
-### HTTP endpoints
-
-```bash
-curl -s http://localhost:31701/health
-# {"status":"ok","service":"opencode-chronicler"}
-
-curl -s -o /dev/null -w '%{http_code}\n' http://localhost:31701/nope
-# 404
-```
-
 ## Configuration
 
 All variables are optional; the defaults are shown below. Invalid values fail
@@ -124,6 +66,16 @@ every truncated listing reports `_≈N of M tokens used._`.
 
 ## MCP tools
 
+Every tool returns Markdown text; failures return `isError: true` with the message.
+
+| Tool | Required | Optional |
+|---|---|---|
+| `read_session` | `session_id: string` | `include_tool_output: boolean` (default `true`), `token_budget: int` (default `150000`) |
+| `tail_session` | `session_id: string` | `include_tool_output: boolean` (default `true`), `token_budget: int` (default `150000`) |
+| `list_sessions` | — | `query: string`, `session_directory: string`, `token_budget: int` (default `1000`) |
+
+`token_budget` is an `int` in `1000…2000000`; see [The budget model](#the-budget-model).
+
 ### `read_session`
 
 Render one opencode session as Markdown from the beginning: a metadata block
@@ -131,11 +83,11 @@ Render one opencode session as Markdown from the beginning: a metadata block
 a horizontal rule, then one `## <role> — <time>` section per message in `seq`
 order.
 
-| Parameter | Type | Default | Notes |
-|---|---|---|---|
-| `session_id` | string (min 1) | — | opencode session id, e.g. `ses_...`. |
-| `include_tool_output` | boolean | `true` | Include tool-result output in the Markdown. |
-| `token_budget` | int, 1000–2000000 | `150000` | Approximate token budget for the rendered document. |
+| Parameter | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `session_id` | `string` (min 1) | **yes** | — | opencode session id, e.g. `ses_...`. |
+| `include_tool_output` | `boolean` | no | `true` | Include tool-result output in the Markdown. |
+| `token_budget` | `int` (1000–2000000) | no | `150000` | Approximate token budget for the rendered document. |
 
 Model reasoning/thinking blocks are omitted from the output. When the session is
 larger than the budget, the response keeps the oldest messages that fit and adds
@@ -198,7 +150,13 @@ An unknown session id returns an error result with the text
 
 Render the **newest** messages of a session as Markdown, walking backwards in
 `seq` order until the budget is filled. Same metadata block and message format as
-`read_session`, same parameters, same defaults.
+`read_session`.
+
+| Parameter | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `session_id` | `string` (min 1) | **yes** | — | opencode session id, e.g. `ses_...`. |
+| `include_tool_output` | `boolean` | no | `true` | Include tool-result output in the Markdown. |
+| `token_budget` | `int` (1000–2000000) | no | `150000` | Approximate token budget for the rendered document. |
 
 When earlier messages do not fit, the response adds
 `_… N earlier messages omitted — showing the last K of T. …_` and
@@ -223,11 +181,11 @@ Example call:
 
 List recent sessions newest-first as a Markdown table, within `token_budget`.
 
-| Parameter | Type | Default | Notes |
-|---|---|---|---|
-| `query` | string | — | Case-insensitive free-text filter on title or directory (`LIKE`). |
-| `session_directory` | string | — | Case-sensitive **absolute** path; only sessions whose working directory is exactly this path. Does not expand to subdirectories. Composes with `query` (AND). Trailing slashes are ignored. |
-| `token_budget` | int, 1000–2000000 | `1000` | Approximate token budget for the rendered table (about 19 rows at the 1 000 default). |
+| Parameter | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `query` | `string` | no | — | Case-insensitive free-text filter on title or directory (`LIKE`). |
+| `session_directory` | `string` | no | — | Case-sensitive **absolute** path; only sessions whose working directory is exactly this path. Does not expand to subdirectories. Composes with `query` (AND). Trailing slashes are ignored. |
+| `token_budget` | `int` (1000–2000000) | no | `1000` | Approximate token budget for the rendered table (about 19 rows at the 1 000 default). |
 
 `query` is fuzzy and matches either column; `session_directory` is exact and
 matches only the working directory. Use the latter to isolate one project:
@@ -401,8 +359,6 @@ byte-identical equality after a full real-client MCP run. Without a configured
 database the test skips with a clear message rather than failing.
 
 ## Development and testing
-
-See [Commands](#commands) for the full list. The short version:
 
 ```bash
 bun run dev      # watch mode
