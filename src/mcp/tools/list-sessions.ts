@@ -6,6 +6,7 @@ import { renderSessionsTable } from "../../render/sessions-table";
 
 export interface ListSessionsInput {
   query?: string;
+  session_directory?: string;
   token_budget?: number;
 }
 
@@ -14,7 +15,11 @@ export function listSessionsHandler(db: ChroniclerDb) {
     const tokenBudget = clampTokenBudget(input.token_budget, TOKEN_BUDGET_DEFAULTS.list);
     try {
       const text = await firstValueFrom(
-        db.loadBoundedSessions({ query: input.query, tokenBudget }).pipe(
+        db.loadBoundedSessions({
+          query: input.query,
+          session_directory: input.session_directory,
+          tokenBudget,
+        }).pipe(
           map((page) =>
             renderSessionsTable(page.rows, {
               totalRows: page.totalRows,

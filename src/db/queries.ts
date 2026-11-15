@@ -30,6 +30,7 @@ export interface SessionSortKey {
 
 export interface SessionPageParams {
   query?: string;
+  session_directory?: string;
   before?: SessionSortKey | null;
   limit?: number;
 }
@@ -42,6 +43,15 @@ export interface SessionPageRow {
 function pageLimit(value: number | undefined): number {
   if (typeof value !== "number" || !Number.isFinite(value)) return DEFAULT_PAGE_LIMIT;
   return Math.min(Math.max(Math.trunc(value), 1), MAX_PAGE_LIMIT);
+}
+
+export function normalizeSessionDirectory(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  if (trimmed.length === 0) return null;
+  let normalized = trimmed;
+  while (normalized.length > 1 && normalized.endsWith("/")) normalized = normalized.slice(0, -1);
+  return normalized;
 }
 
 function escapeLike(input: string): string {
@@ -174,6 +184,12 @@ function listConditions(params: SessionPageParams): { clause: string; args: Arra
     args.push(like, like);
   }
 
+  const directory = normalizeSessionDirectory(params.session_directory);
+  if (directory !== null) {
+    conditions.push("s.directory = ?");
+    args.push(directory);
+  }
+
   if (params.before !== undefined && params.before !== null) {
     conditions.push("(s.time_updated < ? OR (s.time_updated = ? AND s.id < ?))");
     args.push(params.before.timeUpdated, params.before.timeUpdated, params.before.id);
@@ -223,9 +239,15 @@ export function listSessionPage$(
   });
 }
 
-export function countSessions$(db: Database, params: { query?: string } = {}): Observable<number> {
+export function countSessions$(
+  db: Database,
+  params: { query?: string; session_directory?: string } = {},
+): Observable<number> {
   return defer(() => {
-    const { clause, args } = listConditions({ query: params.query });
+    const { clause, args } = listConditions({
+      query: params.query,
+      session_directory: params.session_directory,
+    });
     const row = db
       .query(`SELECT COUNT(*) AS n FROM session_v2 s ${clause}`)
       .get(...args) as { n?: number } | null;

@@ -66,9 +66,15 @@ export function createMcpServer(db: ChroniclerDb, logger: Logger): McpServer {
     {
       title: "List sessions",
       description:
-        "List recent opencode sessions as a Markdown table, newest first, within an approximate token budget.",
+        "List recent opencode sessions as a Markdown table, newest first, within an approximate token budget. Optional exact working-directory filter.",
       inputSchema: {
         query: z.string().optional().describe("Case-insensitive filter on title or directory."),
+        session_directory: z
+          .string()
+          .optional()
+          .describe(
+            "Case-sensitive absolute path: only sessions whose working directory is exactly this path. Composes with query (AND). Does not expand to subdirectories.",
+          ),
         token_budget: tokenBudgetField(TOKEN_BUDGET_DEFAULTS.list),
       },
     },

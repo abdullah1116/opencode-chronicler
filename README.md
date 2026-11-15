@@ -225,8 +225,26 @@ List recent sessions newest-first as a Markdown table, within `token_budget`.
 
 | Parameter | Type | Default | Notes |
 |---|---|---|---|
-| `query` | string | — | Case-insensitive filter on title or directory. |
+| `query` | string | — | Case-insensitive free-text filter on title or directory (`LIKE`). |
+| `session_directory` | string | — | Case-sensitive **absolute** path; only sessions whose working directory is exactly this path. Does not expand to subdirectories. Composes with `query` (AND). Trailing slashes are ignored. |
 | `token_budget` | int, 1000–2000000 | `1000` | Approximate token budget for the rendered table (about 19 rows at the 1 000 default). |
+
+`query` is fuzzy and matches either column; `session_directory` is exact and
+matches only the working directory. Use the latter to isolate one project:
+
+```json
+{
+  "name": "list_sessions",
+  "arguments": {
+    "session_directory": "/home/you/projects/alpha",
+    "token_budget": 1000
+  }
+}
+```
+
+Subdirectories are **not** included: `/home/you/projects` does not return
+`/home/you/projects/alpha`. The `path` column on the session row is never
+consulted — it is a slash-less, mostly empty duplicate of `directory`.
 
 Example call:
 

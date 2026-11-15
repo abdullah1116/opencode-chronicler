@@ -13,6 +13,7 @@ import {
 
 export interface BoundedSessionsParams {
   query?: string;
+  session_directory?: string;
   tokenBudget: number;
 }
 
@@ -39,7 +40,9 @@ async function buildBoundedSessions(
   db: Database,
   params: BoundedSessionsParams,
 ): Promise<BoundedSessions> {
-  const totalRows: number = await firstValueFrom(countSessions$(db, { query: params.query }));
+  const totalRows: number = await firstValueFrom(
+    countSessions$(db, { query: params.query, session_directory: params.session_directory }),
+  );
   const budgetChars = Math.max(
     MIN_BODY_CHARS,
     bodyBudgetChars(params.tokenBudget) -
@@ -53,7 +56,12 @@ async function buildBoundedSessions(
 
   while (rows.length < totalRows) {
     const page: SessionPageRow[] = await firstValueFrom(
-      listSessionPage$(db, { query: params.query, before: cursor, limit: SESSION_PAGE_SIZE }),
+      listSessionPage$(db, {
+        query: params.query,
+        session_directory: params.session_directory,
+        before: cursor,
+        limit: SESSION_PAGE_SIZE,
+      }),
     );
     if (page.length === 0) break;
 

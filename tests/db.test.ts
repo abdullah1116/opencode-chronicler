@@ -70,6 +70,8 @@ function buildFixture(): void {
     { $id: "s2", $project_id: "p1", $parent_id: null, $directory: "/home/x/beta", $title: "Beta", $version: "1.18.18", $time_created: 2000, $time_updated: 5000 },
     { $id: "s3", $project_id: "p2", $parent_id: "s1", $directory: "/home/x/gamma", $title: null, $version: null, $time_created: 1200, $time_updated: 4000 },
     { $id: "s4", $project_id: null, $parent_id: null, $directory: null, $title: "hidden", $version: null, $time_created: null, $time_updated: 1500 },
+    { $id: "s5", $project_id: "p1", $parent_id: null, $directory: "/home/x/alpha2", $title: "Alpha two", $version: "1.18.18", $time_created: 1600, $time_updated: 6000 },
+    { $id: "s6", $project_id: "p1", $parent_id: null, $directory: "/home/x/alpha/sub", $title: "Alpha sub", $version: "1.18.18", $time_created: 1700, $time_updated: 7000 },
   ];
   for (const s of sessions) insertSession.run(s);
 
@@ -326,7 +328,7 @@ describe("listSessionPage$ / countSessions$", () => {
     const pages = await collect(listSessionPage$(db, {}));
     db.close();
     const rows = pages[0]!;
-    expect(rows.map((r) => r.summary.id)).toEqual(["s2", "s3", "s1", "s4"]);
+    expect(rows.map((r) => r.summary.id)).toEqual(["s6", "s5", "s2", "s3", "s1", "s4"]);
     const s1 = rows.find((r) => r.summary.id === "s1")!.summary;
     expect(s1.messageCount).toBe(10);
     expect(s1.preview).toBe("Hello alpha");
@@ -341,7 +343,7 @@ describe("listSessionPage$ / countSessions$", () => {
     const byTitle = await collect(listSessionPage$(db, { query: "alpha" }));
     const byDir = await collect(listSessionPage$(db, { query: "GAMMA" }));
     db.close();
-    expect(byTitle[0]!.map((r) => r.summary.id)).toEqual(["s1"]);
+    expect(byTitle[0]!.map((r) => r.summary.id)).toEqual(["s6", "s5", "s1"]);
     expect(byDir[0]!.map((r) => r.summary.id)).toEqual(["s3"]);
   });
 
@@ -356,8 +358,8 @@ describe("listSessionPage$ / countSessions$", () => {
       }),
     );
     db.close();
-    expect(first[0]!.map((r) => r.summary.id)).toEqual(["s2", "s3"]);
-    expect(second[0]!.map((r) => r.summary.id)).toEqual(["s1", "s4"]);
+    expect(first[0]!.map((r) => r.summary.id)).toEqual(["s6", "s5"]);
+    expect(second[0]!.map((r) => r.summary.id)).toEqual(["s2", "s3"]);
   });
 
   test("countSessions$ respects the filter", async () => {
@@ -365,8 +367,73 @@ describe("listSessionPage$ / countSessions$", () => {
     const all = await collect(countSessions$(db, {}));
     const filtered = await collect(countSessions$(db, { query: "beta" }));
     db.close();
-    expect(all[0]).toBe(4);
+    expect(all[0]).toBe(6);
     expect(filtered[0]).toBe(1);
+  });
+});
+
+describe("session_directory filter", () => {
+  test("matches exactly — no subtree, no sibling prefix", async () => {
+    const db = openDatabase(FIXTURE_DB);
+    const exact = await collect(listSessionPage$(db, { session_directory: "/home/x/alpha" }));
+    const sibling = await collect(listSessionPage$(db, { session_directory: "/home/x/alpha2" }));
+    const parent = await collect(listSessionPage$(db, { session_directory: "/home/x" }));
+    db.close();
+    expect(exact[0]!.map((r) => r.summary.id)).toEqual(["s1"]);
+    expect(sibling[0]!.map((r) => r.summary.id)).toEqual(["s5"]);
+    expect(parent[0]).toEqual([]);
+  });
+
+  test("normalizes trailing slashes and is case-sensitive", async () => {
+    const db = openDatabase(FIXTURE_DB);
+    const slash = await collect(listSessionPage$(db, { session_directory: "/home/x/alpha/" }));
+    const deepSlash = await collect(listSessionPage$(db, { session_directory: "/home/x/alpha///" }));
+    const upper = await collect(listSessionPage$(db, { session_directory: "/HOME/X/ALPHA" }));
+    db.close();
+    expect(slash[0]!.map((r) => r.summary.id)).toEqual(["s1"]);
+    expect(deepSlash[0]!.map((r) => r.summary.id)).toEqual(["s1"]);
+    expect(upper[0]).toEqual([]);
+  });
+
+  test("treats like wildcards literally", async () => {
+    const db = openDatabase(FIXTURE_DB);
+    const percent = await collect(listSessionPage$(db, { session_directory: "/home/x/%" }));
+    const underscore = await collect(listSessionPage$(db, { session_directory: "/home/x/alpha_" }));
+    db.close();
+    expect(percent[0]).toEqual([]);
+    expect(underscore[0]).toEqual([]);
+  });
+
+  test("composes with query (AND) and with count", async () => {
+    const db = openDatabase(FIXTURE_DB);
+    const composed = await collect(
+      listSessionPage$(db, { session_directory: "/home/x/alpha", query: "alpha" }),
+    );
+    const counts = await collect(countSessions$(db, { session_directory: "/home/x/alpha" }));
+    db.close();
+    expect(composed[0]!.map((r) => r.summary.id)).toEqual(["s1"]);
+    expect(counts[0]).toBe(1);
+  });
+
+  test("absent, empty and whitespace all mean no filter", async () => {
+    const db = openDatabase(FIXTURE_DB);
+    const absent = await collect(listSessionPage$(db, {}));
+    const empty = await collect(listSessionPage$(db, { session_directory: "" }));
+    const blank = await collect(listSessionPage$(db, { session_directory: "   " }));
+    db.close();
+    expect(absent[0]!.length).toBe(6);
+    expect(empty[0]!.length).toBe(6);
+    expect(blank[0]!.length).toBe(6);
+  });
+
+  test("budgeted listing keeps totalRows in agreement with the filter", async () => {
+    const db = openDatabase(FIXTURE_DB);
+    const pages = await collect(
+      loadBoundedSessions$(db, { tokenBudget: 1_000, session_directory: "/home/x/alpha" }),
+    );
+    db.close();
+    expect(pages[0]!.totalRows).toBe(1);
+    expect(pages[0]!.rows.map((r) => r.id)).toEqual(["s1"]);
   });
 });
 
@@ -375,8 +442,8 @@ describe("loadBoundedSessions$", () => {
     const db = openDatabase(FIXTURE_DB);
     const pages = await collect(loadBoundedSessions$(db, { tokenBudget: 1_000 }));
     db.close();
-    expect(pages[0]!.totalRows).toBe(4);
-    expect(pages[0]!.rows.map((r) => r.id)).toEqual(["s2", "s3", "s1", "s4"]);
+    expect(pages[0]!.totalRows).toBe(6);
+    expect(pages[0]!.rows.map((r) => r.id)).toEqual(["s6", "s5", "s2", "s3", "s1", "s4"]);
     expect(pages[0]!.estimatedTokens).toBeGreaterThan(0);
   });
 

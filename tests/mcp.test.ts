@@ -186,6 +186,15 @@ describe("list_sessions handler", () => {
     expect(text).toContain("of 1,000 tokens used.");
   });
 
+  test("session_directory narrows the listing", async () => {
+    const hit = textOf(await listSessionsHandler(db)({ session_directory: "/home/x/alpha" }));
+    const miss = textOf(await listSessionsHandler(db)({ session_directory: "/home/x/alpha/" }));
+    const other = textOf(await listSessionsHandler(db)({ session_directory: "/nope" }));
+    expect(hit).toContain("s1");
+    expect(miss).toContain("s1");
+    expect(other).toBe("No sessions found.");
+  });
+
   test("query filter still applies under the budget", async () => {
     const text = textOf(await listSessionsHandler(db)({ query: "nomatch" }));
     expect(text).toBe("No sessions found.");
