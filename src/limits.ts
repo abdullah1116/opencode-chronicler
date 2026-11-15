@@ -11,7 +11,7 @@ export const TOKEN_BUDGET_DEFAULTS = {
   list: 1_000,
 } as const;
 
-export const HEADER_RESERVE_CHARS = 400;
+export const HEADER_RESERVE_CHARS = 600;
 export const MIN_BODY_CHARS = 200;
 export const PART_OVERHEAD_CHARS = 40;
 export const PART_TOKEN_SHARE = 0.25;

@@ -3,6 +3,7 @@ import type { ChroniclerPart, RenderOptions } from "../domain/types";
 
 const FALLBACK_TYPE = "(unknown)";
 const ELLIPSIS = "\u2026";
+export const TRUNCATION_MARKER = `${ELLIPSIS}[truncated `;
 
 export function longestBacktickRun(content: string): number {
   let longest = 0;
@@ -21,7 +22,7 @@ export function longestBacktickRun(content: string): number {
 export function truncate(content: string, max: number): string {
   const limit = Number.isFinite(max) && max > 0 ? Math.floor(max) : 0;
   if (content.length <= limit) return content;
-  return content.slice(0, limit) + `\n${ELLIPSIS}[truncated ${content.length - limit} more chars]`;
+  return content.slice(0, limit) + `\n${TRUNCATION_MARKER}${content.length - limit} more chars]`;
 }
 
 function fencedBlock(content: string, lang = ""): string {

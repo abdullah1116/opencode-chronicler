@@ -18,12 +18,72 @@ migrated, or locked for writing.
 ## Install and run
 
 ```bash
+git clone --depth 1 git@github.com:abdullah1116/opencode-chronicler.git
+cd opencode-chronicler
 bun install
 bun run start          # boots src/index.ts
 ```
 
 The server listens on port `31701`: MCP is served at `/mcp` and a liveness probe
 at `/health`.
+
+## Commands
+
+Every command the project supports, verbatim.
+
+### Install and boot
+
+| Command | What it does |
+|---|---|
+| `git clone --depth 1 git@github.com:abdullah1116/opencode-chronicler.git` | clone the repository |
+| `bun install` | install dependencies (`@modelcontextprotocol/sdk`, `rxjs`, `zod`) |
+| `bun run start` | boot the server on `0.0.0.0:31701` |
+| `bun run dev` | boot with file watching (`bun --watch`) |
+| `PORT=4000 bun run start` | boot on a different port |
+| `LOG_LEVEL=debug bun run start` | boot with debug logging |
+| `OPENCODE_DB_PATH=/path/to/opencode.db bun run start` | boot against a specific database |
+
+### Check and test
+
+| Command | What it does |
+|---|---|
+| `bun run check` | `tsc --noEmit` — strict TypeScript, ESM |
+| `bun test` | full suite: unit + fixture-backed HTTP end-to-end |
+| `bun test tests/db.test.ts` | one test file |
+| `bun test tests/budget.test.ts tests/render.test.ts` | several files |
+| `bun test -t "tail"` | only tests whose name matches a pattern |
+| `OPENCODE_DB_PATH=~/.local/share/opencode/opencode.db bun test tests/e2e` | end-to-end against a live database |
+| `OPENCODE_E2E_SESSION=ses_... bun test tests/e2e` | same, plus live session rendering and the byte-identical DB check |
+| `OPENCODE_DB_PATH=... OPENCODE_E2E_SESSION=ses_... bun test` | the whole suite including live cases |
+
+Without `OPENCODE_DB_PATH` or with no matching database, the live end-to-end
+cases skip with a message instead of failing. Fingerprinting a large database
+takes seconds — the end-to-end hooks allow 120 s.
+
+### Probe a running server
+
+```bash
+bun run start &                                                      # terminal 1
+bun plugin-src/chronicler-keeper/mcp-probe.mjs ses_...               # terminal 2
+
+CHRONICLER_URL=http://127.0.0.1:4000/mcp \
+  bun plugin-src/chronicler-keeper/mcp-probe.mjs ses_...             # non-default port
+```
+
+`mcp-probe.mjs` connects over HTTP, lists the tools, then calls `list_sessions`,
+`read_session` and `tail_session` and prints lengths/heads. It accepts the
+session id as an argument or via `OPENCODE_E2E_SESSION`, and the endpoint via
+`CHRONICLER_URL` (default `http://127.0.0.1:31701/mcp`).
+
+### HTTP endpoints
+
+```bash
+curl -s http://localhost:31701/health
+# {"status":"ok","service":"opencode-chronicler"}
+
+curl -s -o /dev/null -w '%{http_code}\n' http://localhost:31701/nope
+# 404
+```
 
 ## Configuration
 
@@ -57,6 +117,7 @@ character limits anywhere in the API.
 | Overflow | the window stops at a message boundary and the response states how many messages were omitted, and from which end |
 | Single oversized message | included anyway, with its parts truncated to fit |
 | Per-part cap | derived from the budget: 25 % of it, floored at 500 and capped at 8 000 tokens per part |
+| Truncation flag | every document carries `- **Truncated**: no`, or `yes — N messages omitted, M parts truncated` |
 
 Every session document reports its usage as `- **Tokens**: ≈N of M budget`, and
 every truncated listing reports `_≈N of M tokens used._`.
@@ -78,7 +139,8 @@ order.
 
 Model reasoning/thinking blocks are omitted from the output. When the session is
 larger than the budget, the response keeps the oldest messages that fit and adds
-`_… N later messages omitted — showing the first K of T. …_`.
+`_… N later messages omitted — showing the first K of T. …_`, plus
+`- **Truncated**: yes — N messages omitted` in the header.
 
 Example call:
 
@@ -106,6 +168,7 @@ Example output (abridged):
 - **Version**: 1.0.0
 - **Messages**: 2
 - **Tokens**: ≈431 of 20,000 budget
+- **Truncated**: no
 
 ---
 
@@ -138,8 +201,11 @@ Render the **newest** messages of a session as Markdown, walking backwards in
 `read_session`, same parameters, same defaults.
 
 When earlier messages do not fit, the response adds
-`_… N earlier messages omitted — showing the last K of T. …_`. When the budget
-covers the whole session, the output is identical to `read_session`.
+`_… N earlier messages omitted — showing the last K of T. …_` and
+`- **Truncated**: yes — N messages omitted`. Individual parts cut by the derived
+per-part cap are counted too (`…, M parts truncated`), and a single message
+truncated to fit the budget is announced on its own line. When the budget covers
+the whole session, the output is identical to `read_session`.
 
 Example call:
 
@@ -317,6 +383,8 @@ byte-identical equality after a full real-client MCP run. Without a configured
 database the test skips with a clear message rather than failing.
 
 ## Development and testing
+
+See [Commands](#commands) for the full list. The short version:
 
 ```bash
 bun run dev      # watch mode

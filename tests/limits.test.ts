@@ -59,8 +59,8 @@ describe("derived render options", () => {
   });
 
   test("boundary part chars never exceed the caller's part cap", () => {
-    expect(boundaryPartChars(1_000, 1, 28_000)).toBe(2_750);
-    expect(boundaryPartChars(1_000, 10, 28_000)).toBe(239);
+    expect(boundaryPartChars(1_000, 1, 28_000)).toBe(2_570);
+    expect(boundaryPartChars(1_000, 10, 28_000)).toBe(221);
     expect(boundaryPartChars(1_000, 10, 200)).toBe(200);
     expect(boundaryPartChars(1_000, 1_000, 28_000)).toBe(100);
   });

@@ -129,6 +129,7 @@ describe("read_session handler", () => {
     expect(text).toContain("## user");
     expect(text).toContain("- **Tokens**: ≈");
     expect(text).toContain("of 150,000 budget");
+    expect(text).toContain("- **Truncated**: no");
   });
 
   test("unknown id ⇒ isError:true 'Session not found: {id}'", async () => {
@@ -147,6 +148,7 @@ describe("read_session handler", () => {
     const text = textOf(await readSessionHandler(db)({ session_id: "s1", token_budget: 1_000 }));
     expect(text).toContain("- **Messages**: 3 (showing first 2)");
     expect(text).toContain("1 later messages omitted");
+    expect(text).toContain("- **Truncated**: yes — 1 messages omitted");
     expect(text).not.toContain("b".repeat(BIG_CHARS));
   });
 });
@@ -156,6 +158,7 @@ describe("tail_session handler", () => {
     const text = textOf(await tailSessionHandler(db)({ session_id: "s1", token_budget: 1_000 }));
     expect(text).toContain("- **Messages**: 3 (showing last 1)");
     expect(text).toContain("2 earlier messages omitted");
+    expect(text).toMatch(/- \*\*Truncated\*\*: yes/);
     expect(text).not.toContain("Hello alpha");
     expect(text).toContain("[truncated");
   });

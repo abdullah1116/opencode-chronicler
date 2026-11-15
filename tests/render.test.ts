@@ -159,6 +159,7 @@ describe("renderBoundedDoc", () => {
     expect(out).toContain("- **Version**: 1.18.18");
     expect(out).toContain("- **Messages**: 1");
     expect(out).toMatch(/- \*\*Tokens\*\*: ≈[\d,]+ of 150,000 budget/);
+    expect(out).toContain("- **Truncated**: no");
     expect(out).toContain("\n---\n");
     expect(out).toContain("hi");
   });
@@ -185,6 +186,7 @@ describe("renderBoundedDoc", () => {
     const out = renderBoundedDoc({ ...doc([]), messages: [], totalMessages: 0 }, OPTS);
     expect(out.endsWith("_No messages recorded._")).toBe(true);
     expect(out).not.toContain("omitted");
+    expect(out).toContain("- **Truncated**: no");
   });
 
   test("message heading falls back to 'time unknown' and keeps empty-part messages", () => {
@@ -243,6 +245,7 @@ describe("renderBoundedDoc", () => {
     );
     expect(out).toContain("- **Messages**: 12 (showing first 2)");
     expect(out).toContain("_… 10 later messages omitted — showing the first 2 of 12. …_");
+    expect(out).toContain("- **Truncated**: yes — 10 messages omitted");
   });
 
   test("tail omission reads as 'showing the last N'", () => {
@@ -260,6 +263,7 @@ describe("renderBoundedDoc", () => {
     );
     expect(out).toContain("- **Messages**: 12 (showing last 2)");
     expect(out).toContain("_… 10 earlier messages omitted — showing the last 2 of 12. …_");
+    expect(out).toContain("- **Truncated**: yes — 10 messages omitted");
   });
 
   test("boundary truncation is announced and shrinks that message's part cap", () => {
@@ -274,7 +278,17 @@ describe("renderBoundedDoc", () => {
     );
     expect(out).toContain("_… one message was truncated to fit the ≈1,000-token budget. …_");
     expect(out).toContain("[truncated");
+    expect(out).toContain("- **Truncated**: yes — 1 part truncated");
     expect(out).not.toContain(payload);
+  });
+
+  test("part-cap truncation alone flags the document as truncated", () => {
+    const out = renderBoundedDoc(doc([{ kind: "text", text: "0123456789" }]), {
+      includeToolOutput: true,
+      maxPartChars: 5,
+    });
+    expect(out).toContain("[truncated 5 more chars]");
+    expect(out).toContain("- **Truncated**: yes — 1 part truncated");
   });
 });
 

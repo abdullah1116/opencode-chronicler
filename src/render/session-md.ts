@@ -2,26 +2,37 @@ import { DEFAULT_RENDER_OPTIONS } from "../domain/types";
 import type { BoundedDoc, RenderOptions, SessionMessage, SessionMeta } from "../domain/types";
 import { boundaryPartChars, estimateTokens, HEADER_RESERVE_CHARS } from "../limits";
 import { formatNumber } from "./format";
-import { renderPart } from "./parts";
+import { renderPart, TRUNCATION_MARKER } from "./parts";
 
 function orDash(value: string | null): string {
   return value === null ? "\u2014" : value;
 }
 
+export interface RenderedMessage {
+  text: string;
+  truncatedParts: number;
+}
+
+export function renderMessageDetailed(
+  message: SessionMessage,
+  opts: RenderOptions,
+): RenderedMessage {
+  const heading = `## ${message.role} \u2014 ${message.time ?? "time unknown"}`;
+  const rendered = message.parts.map((part) => renderPart(part, opts));
+  const truncatedParts = rendered.filter((text) => text.includes(TRUNCATION_MARKER)).length;
+  const body = rendered.filter((text) => text.length > 0).join("\n\n");
+  return { text: body.length > 0 ? `${heading}\n\n${body}` : heading, truncatedParts };
+}
+
 export function renderMessage(message: SessionMessage, opts: RenderOptions): string {
-  const time = message.time ?? "time unknown";
-  const heading = `## ${message.role} \u2014 ${time}`;
-  const body = message.parts
-    .map((part) => renderPart(part, opts))
-    .filter((rendered) => rendered.length > 0)
-    .join("\n\n");
-  return body.length > 0 ? `${heading}\n\n${body}` : heading;
+  return renderMessageDetailed(message, opts).text;
 }
 
 export function renderSessionHeader(
   meta: SessionMeta,
   messagesLine: string,
   tokenLine: string,
+  truncatedLine: string,
 ): string {
   const parentLine =
     meta.parentID !== null
@@ -40,6 +51,7 @@ export function renderSessionHeader(
     `- **Version**: ${orDash(meta.version)}`,
     messagesLine,
     tokenLine,
+    truncatedLine,
     "",
     "---",
   ].join("\n");
@@ -47,6 +59,17 @@ export function renderSessionHeader(
 
 function tokenLine(tokens: number, tokenBudget: number): string {
   return `- **Tokens**: \u2248${formatNumber(tokens)} of ${formatNumber(tokenBudget)} budget`;
+}
+
+function truncatedLine(omitted: number, truncatedParts: number): string {
+  const reasons: string[] = [];
+  if (omitted > 0) reasons.push(`${formatNumber(omitted)} messages omitted`);
+  if (truncatedParts > 0) {
+    reasons.push(`${formatNumber(truncatedParts)} part${truncatedParts === 1 ? "" : "s"} truncated`);
+  }
+  return reasons.length > 0
+    ? `- **Truncated**: yes \u2014 ${reasons.join(", ")}`
+    : "- **Truncated**: no";
 }
 
 function omissionNotice(doc: BoundedDoc, shown: number, omitted: number): string {
@@ -79,6 +102,7 @@ export function renderBoundedDoc(
       doc.meta,
       messagesLine,
       tokenLine(tokens, doc.tokenBudget),
+      truncatedLine(0, 0),
     );
     return `${header}\n\n_No messages recorded._`;
   }
@@ -101,8 +125,13 @@ export function renderBoundedDoc(
   if (omitted > 0) notices.push(omissionNotice(doc, shown, omitted));
   if (doc.truncatedBoundary) notices.push(boundaryNotice(doc.tokenBudget));
 
+  let truncatedParts = 0;
   const body = doc.messages
-    .map((message) => renderMessage(message, message === boundary ? boundaryOpts : o))
+    .map((message) => {
+      const rendered = renderMessageDetailed(message, message === boundary ? boundaryOpts : o);
+      truncatedParts += rendered.truncatedParts;
+      return rendered.text;
+    })
     .join("\n\n");
 
   const noticeBlock = notices.join("\n\n");
@@ -111,6 +140,7 @@ export function renderBoundedDoc(
     doc.meta,
     messagesLine,
     tokenLine(tokens, doc.tokenBudget),
+    truncatedLine(omitted, truncatedParts),
   );
 
   return [header, noticeBlock, body].filter((section) => section.length > 0).join("\n\n");

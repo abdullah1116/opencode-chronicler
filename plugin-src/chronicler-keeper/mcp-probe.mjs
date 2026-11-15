@@ -7,11 +7,12 @@ if (!sessionId) {
   process.exit(1);
 }
 
-const transport = new StreamableHTTPClientTransport(new URL("http://127.0.0.1:31701/mcp"));
+const url = process.env.CHRONICLER_URL ?? "http://127.0.0.1:31701/mcp";
+const transport = new StreamableHTTPClientTransport(new URL(url));
 const client = new Client({ name: "probe", version: "0.0.1" });
 
 await client.connect(transport);
-console.log("CONNECTED");
+console.log("CONNECTED=" + url);
 
 const tools = await client.listTools();
 console.log("TOOLS=" + JSON.stringify(tools.tools.map((t) => t.name)));
