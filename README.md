@@ -1,68 +1,14 @@
 # opencode-chronicler
 
-A **read-only** Model Context Protocol server that exposes opencode session
-history as well-formed Markdown over streamable HTTP. Point an MCP client at it,
-ask for a session, and you get back the metadata block, the messages in
-authoritative `seq` order, and the tool calls with their results, rendered as
-clean Markdown within a token budget you choose. Model reasoning/thinking blocks
-are omitted by design.
+A **read-only** Model Context Protocol server that turns opencode session history
+into Markdown over streamable HTTP. Point an MCP client at it, ask for a session,
+and you get the metadata block, the messages in `seq` order, and the tool calls
+with their results — rendered within a token budget you choose. Model
+reasoning/thinking blocks are omitted by design.
 
-The database is opened with `{ readonly: true }` and is never written to,
-migrated, or locked for writing.
-
-## Requirements
-
-- **Bun ≥ 1.2** — runtime, test runner, and package manager. The project uses
-  `bun:sqlite`, `Bun.serve`, and `bun test`.
-
-## Install and run
-
-```bash
-git clone --depth 1 git@github.com:abdullah1116/opencode-chronicler.git
-cd opencode-chronicler
-bun install
-bun run start          # boots src/index.ts
-```
-
-The server listens on port `31701`: MCP is served at `/mcp` and a liveness probe
-at `/health`.
-
-## Configuration
-
-All variables are optional; the defaults are shown below. Invalid values fail
-fast at boot with an error naming the offending variable.
-
-| Variable | Default | Description |
-|---|---|---|
-| `OPENCODE_DB_PATH` | `~/.local/share/opencode/opencode.db` | opencode session database (a leading `~` is expanded). |
-| `HOST` | `0.0.0.0` | HTTP bind address. |
-| `PORT` | `31701` | HTTP port serving `/mcp` and `/health`. |
-| `LOG_LEVEL` | `info` | One of `debug`, `info`, `warn`, `error`. |
-| `CHRONICLER_DIR` | `.` | Output directory. |
-| `CHRONICLER_LOG_PATH` | `./chronicler.log` | Log file. |
-| `OPENCODE_E2E_SESSION` | *(unset)* | Session id used by the live-database end-to-end test; unset means the test skips. |
-
-If the database file does not exist, the server refuses to start rather than
-silently creating an empty one.
-
-## The budget model
-
-Every tool that returns a variable-size document accepts exactly one limit:
-`token_budget`, measured in **approximate tokens of rendered Markdown**
-(`ceil(chars / 3.5)`, always reported with `≈`). There are no message-count or
-character limits anywhere in the API.
-
-| Property | Rule |
-|---|---|
-| Range | `1_000` – `2_000_000`, clamped by the server |
-| Defaults | `read_session` 150 000 · `tail_session` 150 000 · `list_sessions` 1 000 |
-| Overflow | the window stops at a message boundary and the response states how many messages were omitted, and from which end |
-| Single oversized message | included anyway, with its parts truncated to fit |
-| Per-part cap | derived from the budget: 25 % of it, floored at 500 and capped at 8 000 tokens per part |
-| Truncation flag | every document carries `- **Truncated**: no`, or `yes — N messages omitted, M parts truncated` |
-
-Every session document reports its usage as `- **Tokens**: ≈N of M budget`, and
-every truncated listing reports `_≈N of M tokens used._`.
+It exposes three tools: `read_session` (from the beginning), `tail_session` (from
+the end) and `list_sessions` (the session index). The database is opened with
+`{ readonly: true }`; there is no write path in the codebase.
 
 ## MCP tools
 
@@ -74,14 +20,15 @@ Every tool returns Markdown text; failures return `isError: true` with the messa
 | `tail_session` | `session_id: string` | `include_tool_output: boolean` (default `true`), `token_budget: int` (default `150000`) |
 | `list_sessions` | — | `query: string`, `session_directory: string`, `token_budget: int` (default `1000`) |
 
-`token_budget` is an `int` in `1000…2000000`; see [The budget model](#the-budget-model).
+`token_budget` is an `int` in `1000…2000000`; see [The budget model](#the-budget-model)
+at the end of this section.
 
 ### `read_session`
 
 Render one opencode session as Markdown from the beginning: a metadata block
-(id, directory, timestamps, project, parent, version, message count, budget),
-a horizontal rule, then one `## <role> — <time>` section per message in `seq`
-order.
+(id, directory, timestamps, project, parent, version, message count, budget,
+truncation flag), a horizontal rule, then one `## <role> — <time>` section per
+message in `seq` order.
 
 | Parameter | Type | Required | Default | Description |
 |---|---|---|---|---|
@@ -89,12 +36,12 @@ order.
 | `include_tool_output` | `boolean` | no | `true` | Include tool-result output in the Markdown. |
 | `token_budget` | `int` (1000–2000000) | no | `150000` | Approximate token budget for the rendered document. |
 
-Model reasoning/thinking blocks are omitted from the output. When the session is
-larger than the budget, the response keeps the oldest messages that fit and adds
-`_… N later messages omitted — showing the first K of T. …_`, plus
-`- **Truncated**: yes — N messages omitted` in the header.
+Model reasoning/thinking blocks are omitted. When the session is larger than the
+budget, the response keeps the oldest messages that fit and adds
+`_… N later messages omitted — showing the first K of T. …_` plus
+`- **Truncated**: yes — N messages omitted`.
 
-Example call:
+Call:
 
 ```json
 {
@@ -106,9 +53,9 @@ Example call:
 }
 ```
 
-Example output (abridged):
+Output (abridged):
 
-```markdown
+```text
 # Alpha Session
 
 - **ID**: `ses_11111111111111111111111111`
@@ -124,24 +71,23 @@ Example output (abridged):
 
 ---
 
-## user — 2026-01-01T00:00:00.000Z
+user — 2026-01-01T00:00:00.000Z
 
 Summarize the release notes.
 
-## assistant — 2026-01-01T00:00:05.000Z
+assistant — 2026-01-01T00:00:05.000Z
 
 **Tool: bash** (`call_abc123`)
 
-```json
-{ "command": "git branch --show-current" }
-```
+    { "command": "git branch --show-current" }
 
 **Output:**
 
-```text
-main
+    main
 ```
-```
+
+(In the real response the per-message headings are `## user` / `## assistant` and
+the tool payloads are fenced code blocks.)
 
 An unknown session id returns an error result with the text
 `Session not found: <id>`.
@@ -160,12 +106,12 @@ Render the **newest** messages of a session as Markdown, walking backwards in
 
 When earlier messages do not fit, the response adds
 `_… N earlier messages omitted — showing the last K of T. …_` and
-`- **Truncated**: yes — N messages omitted`. Individual parts cut by the derived
-per-part cap are counted too (`…, M parts truncated`), and a single message
-truncated to fit the budget is announced on its own line. When the budget covers
-the whole session, the output is identical to `read_session`.
+`- **Truncated**: yes — N messages omitted`. Parts cut by the derived per-part
+cap are counted too (`…, M parts truncated`), and a single message truncated to
+fit the budget is announced on its own line. When the budget covers the whole
+session, the output is identical to `read_session`.
 
-Example call:
+Call:
 
 ```json
 {
@@ -188,7 +134,12 @@ List recent sessions newest-first as a Markdown table, within `token_budget`.
 | `token_budget` | `int` (1000–2000000) | no | `1000` | Approximate token budget for the rendered table (about 19 rows at the 1 000 default). |
 
 `query` is fuzzy and matches either column; `session_directory` is exact and
-matches only the working directory. Use the latter to isolate one project:
+matches only the working directory. Subdirectories are **not** included:
+`/home/you/projects` does not return `/home/you/projects/alpha`. The row's `path`
+column is never consulted — it is a slash-less, mostly empty duplicate of
+`directory`.
+
+Call:
 
 ```json
 {
@@ -200,19 +151,9 @@ matches only the working directory. Use the latter to isolate one project:
 }
 ```
 
-Subdirectories are **not** included: `/home/you/projects` does not return
-`/home/you/projects/alpha`. The `path` column on the session row is never
-consulted — it is a slash-less, mostly empty duplicate of `directory`.
+Output:
 
-Example call:
-
-```json
-{ "name": "list_sessions", "arguments": { "token_budget": 1000 } }
-```
-
-Example output:
-
-```markdown
+```text
 | ID | Title | Msgs | Updated | Directory | Preview |
 |---|---|---|---|---|---|
 | ses_11111111111111111111111111 | Alpha Session | 2 | 2026-01-01T00:00:05.000Z | /home/you/projects/alpha | Summarize the release notes. |
@@ -220,61 +161,78 @@ Example output:
 _≈125 of 1,000 tokens used._
 ```
 
-When no sessions match, the tool returns the single line `No sessions found.`
+When the budget cuts the table, a notice names the omitted rows
+(`_… N older sessions omitted — showing the newest K of T. …_`). When no sessions
+match, the tool returns the single line `No sessions found.`
 
-## Breaking changes in 0.2.0
+### The budget model
 
-- `list_sessions.limit` was removed; use `token_budget`.
-- `read_session.max_part_chars` was removed; the per-part cap is derived from
-  `token_budget`.
-- `read_session` is now bounded by `token_budget` (default 150 000); sessions
-  larger than that are head-truncated with a notice. Pass
-  `token_budget: 2000000` for the previous unbounded behaviour.
-- Output now always includes a `- **Tokens**:` line. Old callers passing either
-  removed parameter get an explicit MCP validation error.
+Every tool that returns a variable-size document accepts exactly one limit:
+`token_budget`, measured in **approximate tokens of rendered Markdown**
+(`ceil(chars / 3.5)`, always reported with `≈`). There are no message-count or
+character limits anywhere in the API.
 
-## Connecting an MCP client
+| Property | Rule |
+|---|---|
+| Range | `1_000` – `2_000_000`, clamped by the server |
+| Defaults | `read_session` 150 000 · `tail_session` 150 000 · `list_sessions` 1 000 |
+| Overflow | the window stops at a message boundary and the response states how many messages were omitted, and from which end |
+| Single oversized message | included anyway, with its parts truncated to fit |
+| Per-part cap | derived from the budget: 25 % of it, floored at 500 and capped at 8 000 tokens per part |
+| Truncation flag | every document carries `- **Truncated**: no`, or `yes — N messages omitted, M parts truncated` |
 
-Register the chronicler as a **remote** MCP server in your opencode config
-(`opencode.json`, or `opencode.jsonc` on installs that use the JSONC extension —
-strict JSON content either way):
+Every session document reports its usage as `- **Tokens**: ≈N of M budget`, and
+every truncated listing reports `_≈N of M tokens used._`.
 
-```json
-{
-  "mcp": {
-    "chronicler": {
-      "type": "remote",
-      "url": "http://localhost:31701/mcp"
-    }
-  }
-}
+## Serve and configure
+### Requirements
+
+- **Bun ≥ 1.2** — runtime, test runner, and package manager. The project uses
+  `bun:sqlite`, `Bun.serve`, and `bun test`.
+
+### Install and run
+
+```bash
+git clone --depth 1 git@github.com:abdullah1116/opencode-chronicler.git
+cd opencode-chronicler
+bun install
+bun run start          # boots src/index.ts
 ```
 
-That is the opencode 1.18.x V1 schema, where MCP servers live directly under the
-`mcp` key. V2-style configs document them under `mcp.servers.<name>` with a
-`disabled` field:
+### Configuration
 
-```json
-{
-  "mcp": {
-    "servers": {
-      "chronicler": {
-        "type": "remote",
-        "url": "http://localhost:31701/mcp",
-        "disabled": false
-      }
-    }
-  }
-}
+All variables are optional; the defaults are shown below. Invalid values fail
+fast at boot with an error naming the offending variable.
+
+| Variable | Default | Description |
+|---|---|---|
+| `OPENCODE_DB_PATH` | `~/.local/share/opencode/opencode.db` | opencode session database (a leading `~` is expanded). |
+| `HOST` | `0.0.0.0` | HTTP bind address. |
+| `PORT` | `31701` | HTTP port serving `/mcp` and `/health`. |
+| `LOG_LEVEL` | `info` | One of `debug`, `info`, `warn`, `error`. |
+| `CHRONICLER_DIR` | `.` | Output directory. |
+| `CHRONICLER_LOG_PATH` | `./chronicler.log` | Log file. |
+| `OPENCODE_E2E_SESSION` | *(unset)* | Session id used by the live-database end-to-end test; unset means the test skips. |
+
+If the database file does not exist, the server refuses to start rather than
+silently creating an empty one.
+
+### Endpoints
+
+The server listens on `HOST`:`PORT` (defaults `0.0.0.0:31701`).
+
+- `/mcp` — streamable HTTP MCP endpoint. Point any MCP client at
+  `http://<host>:31701/mcp`.
+- `GET /health` — liveness probe.
+
+```bash
+curl http://localhost:31701/health
+# {"status":"ok","service":"opencode-chronicler"}
 ```
 
-Replace `localhost` with the host running the chronicler when it is not on the
-same machine. The chronicler never edits your opencode config or database — it
-is a strictly read-only consumer of the session DB. Wiring the server into a
-client is user-side setup.
+An unknown route returns HTTP 404 `{"error":"not found"}`.
 
 ## Running on boot
-
 Any process supervisor works. On a normal machine, a systemd **user** service:
 
 ```ini
@@ -309,7 +267,6 @@ into your opencode plugin path and reference it from the config's `plugin`
 array.
 
 ## How it works
-
 | module | responsibility |
 |---|---|
 | `config/env.ts` | Env → `AppConfig` (db path, directory, log path). |
@@ -337,18 +294,7 @@ with `firstValueFrom` the only Promise-shaped edge, inside the MCP handler.
 Each `/mcp` request constructs a fresh `McpServer` and a fresh single-use
 transport, so there is no session state to leak between callers.
 
-## Health check
-
-```bash
-curl http://localhost:31701/health
-# {"status":"ok","service":"opencode-chronicler"}
-```
-
-`GET /health` returns HTTP 200 with that JSON body; any unknown route returns
-HTTP 404 `{"error":"not found"}`.
-
 ## Read-only guarantee
-
 The chronicler is strictly a **consumer** of `opencode.db`. The database is
 opened as `new Database(path, { readonly: true, create: false })`, so SQLite
 itself rejects any write attempt, and the codebase contains no `INSERT`,
@@ -359,7 +305,6 @@ byte-identical equality after a full real-client MCP run. Without a configured
 database the test skips with a clear message rather than failing.
 
 ## Development and testing
-
 ```bash
 bun run dev      # watch mode
 bun run check    # tsc --noEmit (strict, ESM)
@@ -371,5 +316,4 @@ The end-to-end suite runs against a live opencode database when
 include live session rendering, otherwise that case skips.
 
 ## License
-
 MIT — see [LICENSE](LICENSE).
