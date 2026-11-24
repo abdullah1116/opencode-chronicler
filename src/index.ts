@@ -2,6 +2,7 @@ import { loadEnv } from "./config/env";
 import { createLogger } from "./log";
 import { createChroniclerDb } from "./db/opencode-db";
 import { createHttpApp } from "./mcp/http";
+import { startStdio } from "./mcp/stdio";
 
 const config = loadEnv();
 const log = createLogger(config.logLevel);
@@ -16,15 +17,20 @@ log.info("opencode-chronicler starting", {
 const db = createChroniclerDb(config);
 log.info("opened opencode database (readonly)", { dbPath: config.dbPath });
 
-const app = createHttpApp(config, db, log);
-log.info(`listening on http://${config.host}:${app.port}/mcp`);
+const app = process.argv.includes("--stdio") ? undefined : createHttpApp(config, db, log);
+if (app) {
+  log.info(`listening on http://${config.host}:${app.port}/mcp`);
+} else {
+  log.info("listening on stdio");
+  await startStdio(db, log);
+}
 
 let shuttingDown = false;
 async function shutdown(signal: string): Promise<void> {
   if (shuttingDown) return;
   shuttingDown = true;
   log.info(`received ${signal}, shutting down`);
-  await app.stop();
+  if (app) await app.stop();
   db.raw.close();
   log.info("shutdown complete");
   process.exit(0);
