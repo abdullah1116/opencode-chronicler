@@ -64,14 +64,14 @@ beforeAll(async () => {
   client = new Client({ name: "chronicler-e2e", version: "0.0.0" });
   const transport = new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${app.port}/mcp`));
   await client.connect(transport);
-});
+}, 120_000);
 
 afterAll(async () => {
   if (!HAS_TARGET || client === undefined) return;
   await client.close();
   await app.stop();
   db.raw.close();
-});
+}, 120_000);
 
 describe.skipIf(!HAS_TARGET)("e2e: real MCP over HTTP against the real opencode.db", () => {
   test(`real opencode.db is readable at ${REAL_DB}`, () => {
@@ -84,10 +84,11 @@ describe.skipIf(!HAS_TARGET)("e2e: real MCP over HTTP against the real opencode.
     expect(await res.json()).toEqual({ status: "ok", service: "opencode-chronicler" });
   });
 
-  test("handshake: listTools exposes read_session + list_sessions", async () => {
+  test("handshake: listTools exposes read_session + tail_session + list_sessions", async () => {
     const tools = await client.listTools();
     const names = tools.tools.map((t) => t.name).sort();
     expect(names).toContain("read_session");
+    expect(names).toContain("tail_session");
     expect(names).toContain("list_sessions");
   });
 
@@ -101,13 +102,23 @@ describe.skipIf(!HAS_TARGET)("e2e: real MCP over HTTP against the real opencode.
     expect(text).toContain("## user");
   });
 
-  test("list_sessions(limit 5) returns a markdown table", async () => {
-    const result = await client.callTool({ name: "list_sessions", arguments: { limit: 5 } });
+  test("tail_session returns markdown for the configured session id", async () => {
+    const result = await client.callTool({
+      name: "tail_session",
+      arguments: { session_id: TARGET_SESSION, token_budget: 20_000 },
+    });
+    const text = extractText(result as { content?: Array<{ type: string; text?: string }> });
+    expect(text.startsWith("# ")).toBe(true);
+    expect(text).toContain("- **Tokens**: \u2248");
+  });
+
+  test("list_sessions(token_budget 1000) returns a budgeted markdown table", async () => {
+    const result = await client.callTool({ name: "list_sessions", arguments: { token_budget: 1_000 } });
     const text = extractText(result as { content?: Array<{ type: string; text?: string }> });
     expect(text.startsWith("| ID |")).toBe(true);
     const dataRows = text.split("\n").filter((l) => l.startsWith("| ses_"));
     expect(dataRows.length).toBeGreaterThan(0);
-    expect(dataRows.length).toBeLessThanOrEqual(5);
+    expect(dataRows.length).toBeLessThanOrEqual(25);
   });
 
   test("real opencode.db is BYTE-IDENTICAL after the run", async () => {

@@ -23,6 +23,7 @@ export interface SessionSummary {
 
 export interface SessionMessage {
   id: string;
+  seq: number;
   role: MessageRole;
   time: string | null;
   parts: ChroniclerPart[];
@@ -42,6 +43,24 @@ export type ChroniclerPart =
 export interface SessionDoc {
   meta: SessionMeta;
   messages: SessionMessage[];
+}
+
+export type DocDirection = "head" | "tail";
+
+export interface BoundedDoc {
+  meta: SessionMeta;
+  messages: SessionMessage[];
+  totalMessages: number;
+  direction: DocDirection;
+  tokenBudget: number;
+  truncatedBoundary: boolean;
+}
+
+export interface BoundedSessions {
+  rows: SessionSummary[];
+  totalRows: number;
+  tokenBudget: number;
+  estimatedTokens: number;
 }
 
 export interface RenderOptions {
